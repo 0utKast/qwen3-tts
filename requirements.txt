@@ -1,0 +1,10 @@
+flask
+flask-cors
+qwen-tts
+torch
+transformers
+soundfile
+numpy
+librosa
+accelerate
+pymupdf

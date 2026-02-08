@@ -1,0 +1,38 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Environments
+.venv/
+venv/
+env/
+dist/
+build/
+.conda/
+
+# Models & Large Files
+*.pth
+*.bin
+*.pt
+*.safetensors
+checkpoints/
+models/
+
+# App Specific
+static/audio/*.wav
+!static/audio/permanent_voices/
+static/audio/sessions/
+voices.json
+temp_ref.wav
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
