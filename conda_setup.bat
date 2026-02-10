@@ -11,6 +11,7 @@ pip install torch torchvision torchaudio --index-url https://download.pytorch.or
 
 echo [3/3] Installing other requirements...
 pip install -r requirements.txt
+pip install huggingface_hub[hf_xet]
 
 echo.
 echo Setup complete! You can now use the 'Qwen3-TTS Studio' shortcut.

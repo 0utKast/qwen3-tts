@@ -7,6 +7,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const outputCard = document.getElementById('output-card');
     const downloadBtn = document.getElementById('download-btn');
     const navItems = document.querySelectorAll('.nav-item');
+    const speedSlider = document.getElementById('speed-slider');
+    const speedValue = document.getElementById('speed-value');
 
     // Tab Controls
     const presetVoicesDiv = document.getElementById('preset-voices');
@@ -43,6 +45,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     loadVoices();
+
+    // Speed Slider Listener
+    speedSlider.addEventListener('input', () => {
+        speedValue.innerText = `${speedSlider.value}x`;
+    });
 
     // Navigation
     navItems.forEach(item => {
@@ -145,88 +152,137 @@ document.addEventListener('DOMContentLoaded', () => {
         // For now, we'll assume the backend can find 'temp_ref.wav' or we pass the context.
         saveVoice('clone', 'temp_ref.wav');
     });
-    // Generation
+    // --- UI Progress Elements ---
+    const progressContainer = document.getElementById('progress-container');
+    const progressStatus = document.getElementById('progress-status');
+    const progressCount = document.getElementById('progress-count');
+    const progressBarFill = document.getElementById('progress-bar-fill');
+
+    // --- Unified Generation & Polling ---
     generateBtn.addEventListener('click', async () => {
         const text = ttsInput.value.trim();
         const language = document.getElementById('language-input').value;
         if (!text) return alert('Please enter some text');
 
+        // Reset UI
         generateBtn.disabled = true;
-        generateBtn.innerText = 'Generating...';
+        generateBtn.innerText = 'Initializing...';
+        progressContainer.classList.remove('hidden');
+        progressBarFill.style.width = '0%';
+        progressStatus.innerText = 'Preparing...';
+        progressCount.innerText = '0/0';
+        outputCard.classList.add('hidden');
 
         try {
-            let endpoint = '/api/generate';
-            let body;
-            let options = {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' }
+            // 1. Start Session
+            let payload = {
+                text,
+                language,
+                speed: parseFloat(speedSlider.value),
+                voice_id: selectedVoice || 'vivian',
+                mode: currentTab,
+                instruction: instructionInput.value
             };
 
-            if (currentTab === 'preset') {
-                body = JSON.stringify({
-                    text,
-                    voice_id: selectedVoice || 'vivian',
-                    instruction: instructionInput.value,
-                    language
-                });
+            // Additional info for specialized modes
+            if (currentTab === 'design') {
+                payload.extra_info = document.getElementById('voice-description').value;
+                if (!payload.extra_info) throw new Error('Enter voice description');
             } else if (currentTab === 'clone') {
-                if (!selectedFile) return alert('Please upload a reference audio');
-                endpoint = '/api/clone';
+                if (!selectedFile) throw new Error('Please upload a reference audio');
+                // For direct clones not yet saved, we still need to handle the initial upload
+                // However, following the plan to unify, we keep it simple: 
+                // if it's a new clone, we use the old direct endpoint or a simplified session start.
+                // TO-DO: For now, we'll keep the direct /api/clone logic for unsaved clones 
+                // but wrap it in UI feedback, OR simplify sessions to handle files (harder).
+                // Let's stick to the simplest: Sessions for everything else, direct for unsaved clone.
+            }
+
+            // Execute based on type
+            if (currentTab === 'clone' && selectedFile) {
+                // Direct clone path (simplified progress)
+                progressStatus.innerText = 'Cloning... (Slow process)';
+                progressBarFill.style.width = '50%';
+
                 const formData = new FormData();
                 formData.append('audio', selectedFile);
                 formData.append('text', text);
                 formData.append('language', language);
-                options = { method: 'POST', body: formData };
-            } else if (currentTab === 'design') {
-                const desc = document.getElementById('voice-description').value;
-                if (!desc) return alert('Enter voice description');
-                endpoint = '/api/design';
-                body = JSON.stringify({
-                    text,
-                    description: desc,
-                    language
-                });
+                formData.append('speed', speedSlider.value);
+
+                const res = await fetch('/api/clone', { method: 'POST', body: formData });
+                const result = await res.json();
+                if (result.url) finalizeGeneration(result.url);
+                else throw new Error(result.error);
+                return;
             }
 
-            if (body) options.body = body;
+            // Session Path (Presets & Design)
+            const res = await fetch('/api/stream/start', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const session = await res.json();
 
-            const res = await fetch(endpoint, options);
-            const result = await res.json();
+            if (session.error) throw new Error(session.error);
+            pollGenerationStatus(session.session_id, session.total_chunks);
 
-            if (result.url) {
-                audioPlayer.src = result.url;
-                outputCard.classList.remove('hidden');
-                streamCard.classList.add('hidden'); // Hide streaming if doing single gen
-                audioPlayer.play();
-                downloadBtn.onclick = () => window.open(result.url);
-            } else {
-                alert('Error: ' + result.error);
-            }
         } catch (e) {
-            alert('Generation failed. Check backend logs.');
-        } finally {
-            generateBtn.disabled = false;
-            generateBtn.innerText = 'Generate Voice';
+            alert(e.message);
+            resetGenUI();
         }
     });
 
-    // --- Streaming & Reader Logic ---
+    async function pollGenerationStatus(sessionId, totalChunks) {
+        try {
+            const res = await fetch(`/api/stream/status/${sessionId}`);
+            const status = await res.json();
+
+            if (status.error) throw new Error(status.error);
+
+            // Update UI
+            const ready = status.ready_chunks.length;
+            const progress = (ready / totalChunks) * 100;
+            progressBarFill.style.width = `${progress}%`;
+            progressCount.innerText = `${ready}/${totalChunks}`;
+            progressStatus.innerText = status.status;
+
+            if (status.status === 'Completed') {
+                progressStatus.innerText = 'Merging chunks...';
+                const concatRes = await fetch(`/api/stream/concatenate/${sessionId}`);
+                const final = await concatRes.json();
+                if (final.url) finalizeGeneration(final.url);
+                else throw new Error(final.error);
+            } else if (status.status === 'Error') {
+                throw new Error(status.error);
+            } else {
+                // Continue polling
+                setTimeout(() => pollGenerationStatus(sessionId, totalChunks), 1500);
+            }
+        } catch (e) {
+            alert('Generation error: ' + e.message);
+            resetGenUI();
+        }
+    }
+
+    function finalizeGeneration(url) {
+        audioPlayer.src = url;
+        outputCard.classList.remove('hidden');
+        audioPlayer.play();
+        downloadBtn.onclick = () => window.open(url);
+        resetGenUI();
+    }
+
+    function resetGenUI() {
+        generateBtn.disabled = false;
+        generateBtn.innerText = 'Generate Voice';
+        progressContainer.classList.add('hidden');
+    }
+
+    // --- PDF Extraction Utility ---
     const pdfInput = document.getElementById('pdf-input');
     const pdfDropZone = document.getElementById('pdf-drop-zone');
-    const streamCard = document.getElementById('stream-card');
-    const streamInfo = document.getElementById('stream-info');
-    const streamProgress = document.getElementById('stream-progress-bar');
-    const streamCount = document.getElementById('stream-count');
-    const stopStreamBtn = document.getElementById('stop-stream-btn');
-    const player1 = document.getElementById('player-1');
-    const player2 = document.getElementById('player-2');
-
-    let currentSession = null;
-    let playingIndex = -1;
-    let readyChunks = [];
-    let isStreaming = false;
-    let activePlayer = 1;
-    let sessionMode = 'preset';
 
     pdfDropZone.addEventListener('click', () => pdfInput.click());
     pdfInput.addEventListener('change', async (e) => {
@@ -245,144 +301,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 pdfDropZone.querySelector('p').innerText = `Extracted: ${file.name}`;
             } else {
                 alert('Extraction failed: ' + result.error);
+                pdfDropZone.querySelector('p').innerText = 'Drop PDF to extract text';
             }
         } catch (e) {
             console.error(e);
+            pdfDropZone.querySelector('p').innerText = 'Drop PDF to extract text';
         }
     });
-
-    async function startStreaming() {
-        const text = ttsInput.value.trim();
-        const language = document.getElementById('language-input').value;
-        const designPrompt = document.getElementById('voice-description').value;
-        if (!text) return alert('Please enter or extract text first');
-
-        generateBtn.disabled = true;
-        generateBtn.innerText = 'Initializing...';
-
-        try {
-            const res = await fetch('/api/stream/start', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    text,
-                    voice_id: selectedVoice || 'vivian',
-                    instruction: instructionInput.value,
-                    language,
-                    mode: sessionMode,
-                    extra_info: sessionMode === 'design' ? designPrompt : ''
-                })
-            });
-
-            currentSession = await res.json();
-            if (currentSession.session_id) {
-                isStreaming = true;
-                playingIndex = -1;
-                readyChunks = [];
-                activePlayer = 1;
-
-                outputCard.classList.add('hidden');
-                streamCard.classList.remove('hidden');
-
-                // Reset UI
-                streamProgress.style.width = '0%';
-                streamCount.innerText = '0/0';
-                streamInfo.innerText = 'Starting...';
-
-                pollStatus();
-            }
-        } catch (e) {
-            alert('Streaming failed to start');
-            generateBtn.disabled = false;
-            generateBtn.innerText = 'Generate Voice';
-        }
-    }
-
-    async function pollStatus() {
-        if (!isStreaming) return;
-
-        try {
-            const res = await fetch(`/api/stream/status/${currentSession.session_id}`);
-            const status = await res.json();
-            readyChunks = status.ready_chunks;
-
-            streamInfo.innerText = status.status;
-            const progress = (readyChunks.length / currentSession.total_chunks) * 100;
-            streamProgress.style.width = `${progress}%`;
-            streamCount.innerText = `${readyChunks.length}/${currentSession.total_chunks}`;
-
-            // Auto-start playback when first chunk is ready
-            if (playingIndex === -1 && readyChunks.includes(0)) {
-                playNextChunk();
-            }
-
-            if (status.status !== 'Completed' && status.status !== 'Error' && isStreaming) {
-                setTimeout(pollStatus, 2000);
-            }
-        } catch (e) {
-            console.error('Status poll error', e);
-        }
-    }
-
-    function playNextChunk() {
-        if (!isStreaming) return;
-
-        const nextIndex = playingIndex + 1;
-        if (nextIndex >= currentSession.total_chunks) {
-            isStreaming = false;
-            streamInfo.innerText = 'Finished Reading';
-            generateBtn.disabled = false;
-            generateBtn.innerText = 'Generate Voice';
-            return;
-        }
-
-        if (readyChunks.includes(nextIndex)) {
-            playingIndex = nextIndex;
-            const audioSrc = `/api/stream/audio/${currentSession.session_id}/${playingIndex}`;
-
-            const currentPlayer = activePlayer === 1 ? player1 : player2;
-            const otherPlayer = activePlayer === 1 ? player2 : player1;
-
-            currentPlayer.src = audioSrc;
-            currentPlayer.play();
-
-            // Preload next
-            if (readyChunks.includes(playingIndex + 1)) {
-                otherPlayer.src = `/api/stream/audio/${currentSession.session_id}/${playingIndex + 1}`;
-                otherPlayer.load();
-            }
-
-            activePlayer = activePlayer === 1 ? 2 : 1;
-        } else {
-            streamInfo.innerText = 'Waiting for buffer...';
-            setTimeout(playNextChunk, 1000);
-        }
-    }
-
-    [player1, player2].forEach(p => {
-        p.onended = () => {
-            playNextChunk();
-        };
-        p.onerror = () => {
-            console.error('Playback error on chunk', playingIndex);
-            setTimeout(playNextChunk, 2000);
-        };
-    });
-
-    stopStreamBtn.addEventListener('click', () => {
-        isStreaming = false;
-        player1.pause();
-        player2.pause();
-        streamInfo.innerText = 'Stopped';
-        generateBtn.disabled = false;
-        generateBtn.innerText = 'Generate Voice';
-    });
-
-    // Override Generate button if in reader mode
-    generateBtn.addEventListener('click', (e) => {
-        if (currentTab === 'reader') {
-            e.stopImmediatePropagation();
-            startStreaming();
-        }
-    }, true);
 });

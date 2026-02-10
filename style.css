@@ -279,9 +279,34 @@ nav {
     border-top: 1px solid var(--glass-border);
 }
 
-.language-selector h3 {
+.language-selector h3,
+.speed-selector h3 {
     font-size: 0.9rem;
     color: var(--text-muted);
+}
+
+.speed-selector {
+    padding-top: 16px;
+}
+
+.slider-container {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 8px;
+}
+
+#speed-slider {
+    flex: 1;
+    cursor: pointer;
+    accent-color: var(--primary);
+}
+
+#speed-value {
+    font-size: 0.85rem;
+    font-weight: 600;
+    color: var(--primary);
+    min-width: 35px;
 }
 
 .language-selector select {
@@ -422,6 +447,43 @@ audio {
     width: 100%;
     filter: invert(100%) hue-rotate(180deg) brightness(1.5);
     height: 40px;
+}
+
+/* Progress Bar Styles */
+.progress-section {
+    margin: 15px 0;
+    padding: 10px;
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.progress-info {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+}
+
+.progress-bar-wrapper {
+    height: 8px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 4px;
+    overflow: hidden;
+}
+
+.progress-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--primary), var(--secondary));
+    box-shadow: 0 0 15px var(--primary-glow);
+    transition: width 0.4s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+#progress-status {
+    font-weight: 500;
+    color: var(--primary);
 }
 
 .hidden {

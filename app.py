@@ -1,4 +1,7 @@
 import os
+# Optimize Hugging Face environment
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "1"
 import json
 import torch
 import soundfile as sf
@@ -172,10 +175,34 @@ def split_text_streaming(text, first_chunk_len=1000, target_len=2000):
             
     return refined_chunks
 
-def generation_worker(session_id, chunks, voice_id, instruction, language, mode, extra_info):
+def get_speed_instruction(speed, language='english'):
+    """Maps numerical speed to natural language instructions."""
+    if speed is None: return ""
+    
+    speed = float(speed)
+    if 0.9 <= speed <= 1.1: return ""
+    
+    # Spanish mapping
+    if language == 'spanish':
+        if speed <= 0.6: return "habla muy despacio,"
+        if speed <= 0.8: return "habla un poco más lento,"
+        if speed >= 1.5: return "habla muy rápido,"
+        if speed >= 1.2: return "habla un poco más rápido,"
+    
+    # Default English mapping
+    if speed <= 0.6: return "speak very slowly,"
+    if speed <= 0.8: return "speak a bit slower,"
+    if speed >= 1.5: return "speak very fast,"
+    if speed >= 1.2: return "speak a bit faster,"
+    
+    return ""
+
+def generation_worker(session_id, chunks, voice_id, instruction, language, mode, extra_info, speed=1.0):
     session = SESSIONS[session_id]
     session_path = os.path.join(SESSION_DIR, session_id)
     os.makedirs(session_path, exist_ok=True)
+    
+    speed_ins = get_speed_instruction(speed, language)
     
     for i, text in enumerate(chunks):
         if session.get('stopped'): break
@@ -191,6 +218,10 @@ def generation_worker(session_id, chunks, voice_id, instruction, language, mode,
                 if mode == 'design' or (custom_voice and custom_voice['type'] == 'design'):
                     current_mode = 'design'
                     prompt = extra_info if mode == 'design' else custom_voice['prompt']
+                    
+                    if speed_ins:
+                        prompt = f"{speed_ins} {prompt}"
+                        
                     prepare_model('designer')
                     with gpu_lock:
                         wavs, sr = voice_designer.generate_voice_design(text, instruct=prompt, language=language)
@@ -203,9 +234,13 @@ def generation_worker(session_id, chunks, voice_id, instruction, language, mode,
                 else: # Preset/Standard
                     prepare_model('tts')
                     with gpu_lock:
+                        full_instruction = instruction
+                        if speed_ins:
+                            full_instruction = f"{speed_ins} {instruction}" if instruction else speed_ins.strip(',')
+                            
                         try:
-                            if instruction:
-                                wavs, sr = tts_custom.generate_custom_voice(text, speaker=voice_id, instruct=instruction, language=language)
+                            if full_instruction:
+                                wavs, sr = tts_custom.generate_custom_voice(text, speaker=voice_id, instruct=full_instruction, language=language)
                             else:
                                 wavs, sr = tts_custom.generate_custom_voice(text, speaker=voice_id, language=language)
                         except Exception as e:
@@ -218,17 +253,25 @@ def generation_worker(session_id, chunks, voice_id, instruction, language, mode,
                     sf.write(filepath, audio, sr)
                     
                     session['ready_chunks'].append(i)
-                    session['status'] = f"Processing {i+1}/{len(chunks)}"
+                    progress_pct = int((len(session['ready_chunks']) / len(chunks)) * 100)
+                    session['status'] = f"Processing {len(session['ready_chunks'])}/{len(chunks)} ({progress_pct}%)"
+                    
+                    # Terminal Progress Indicator
+                    print(f"[{session_id[:8]}] Progress: {len(session['ready_chunks'])}/{len(chunks)} - Chunk {i} saved. ({progress_pct}%)")
                 else:
                     raise ValueError("Generation failed to return audio")
                     
         except Exception as e:
             session['error'] = str(e)
-            print(f"Error in worker: {e}")
+            print(f"[{session_id[:8]}] Error in worker: {e}")
             break
             
     # Keep models on GPU for high-performance RTX 3090
-    session['status'] = "Completed" if not session.get('error') else "Error"
+    if not session.get('error'):
+        session['status'] = "Completed"
+        print(f"[{session_id[:8]}] Generation Completed.")
+    else:
+        session['status'] = "Error"
 
 @app.route('/api/stream/start', methods=['POST'])
 def stream_start():
@@ -240,6 +283,7 @@ def stream_start():
     language = LANGUAGE_MAP.get(lang_code, 'english')
     mode = data.get('mode', 'preset')
     extra_info = data.get('extra_info', '') # ref_path or description
+    speed = data.get('speed', 1.0)
     
     if not text:
         return jsonify({"error": "No text"}), 400
@@ -255,7 +299,7 @@ def stream_start():
         "error": None
     }
     
-    thread = threading.Thread(target=generation_worker, args=(session_id, chunks, voice_id, instruction, language, mode, extra_info))
+    thread = threading.Thread(target=generation_worker, args=(session_id, chunks, voice_id, instruction, language, mode, extra_info, speed))
     thread.start()
     
     return jsonify({"session_id": session_id, "total_chunks": len(chunks)})
@@ -272,6 +316,44 @@ def stream_audio(session_id, chunk_id):
     if os.path.exists(filepath):
         return send_file(filepath)
     return jsonify({"error": "Chunk not ready"}), 404
+
+@app.route('/api/stream/concatenate/<session_id>', methods=['GET'])
+def stream_concatenate(session_id):
+    if session_id not in SESSIONS:
+        return jsonify({"error": "Session not found"}), 404
+    
+    session = SESSIONS[session_id]
+    if session['status'] != 'Completed':
+        return jsonify({"error": "Generation not completed"}), 400
+    
+    try:
+        session_path = os.path.join(SESSION_DIR, session_id)
+        all_audio = []
+        sample_rate = None
+        
+        # Sort chunks to ensure correct order
+        for i in range(session['total_chunks']):
+            chunk_path = os.path.join(session_path, f"chunk_{i}.wav")
+            if os.path.exists(chunk_path):
+                data, sr = sf.read(chunk_path)
+                all_audio.append(data)
+                sample_rate = sr
+            else:
+                return jsonify({"error": f"Chunk {i} missing"}), 500
+        
+        if not all_audio:
+            return jsonify({"error": "No audio chunks found"}), 500
+            
+        # Concatenate and save final file
+        final_audio = np.concatenate(all_audio)
+        final_filename = f"final_{session_id}.wav"
+        final_path = os.path.join(OUTPUT_DIR, final_filename)
+        sf.write(final_path, final_audio, sample_rate)
+        
+        return jsonify({"url": f"/static/audio/{final_filename}"})
+    except Exception as e:
+        print(f"Error concatenating chunks: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route('/api/extract-text', methods=['POST'])
 def extract_pdf_text():
@@ -355,6 +437,7 @@ def generate():
     voice_id = data.get('voice_id', 'vivian')
     instruction = data.get('instruction', '')
     lang_code = data.get('language', 'zh')
+    speed = data.get('speed', 1.0)
     language = LANGUAGE_MAP.get(lang_code, 'english') # Map or fallback to english
     
     if not text:
@@ -374,8 +457,13 @@ def generate():
         if custom_voice:
             if custom_voice['type'] == 'design':
                 prepare_model('designer')
+                prompt = custom_voice['prompt']
+                speed_ins = get_speed_instruction(speed, language)
+                if speed_ins:
+                    prompt = f"{speed_ins} {prompt}"
+                    
                 with gpu_lock:
-                    wavs, sr = voice_designer.generate_voice_design(text, instruct=custom_voice['prompt'], language=language)
+                    wavs, sr = voice_designer.generate_voice_design(text, instruct=prompt, language=language)
             else: # clone
                 prepare_model('tts')
                 with gpu_lock:
@@ -383,10 +471,16 @@ def generate():
         else:
             # Preset Logic
             prepare_model('tts')
+            speed_ins = get_speed_instruction(speed, language)
+            
             with gpu_lock:
-                if instruction:
+                full_instruction = instruction
+                if speed_ins:
+                    full_instruction = f"{speed_ins} {instruction}" if instruction else speed_ins.strip(',')
+                
+                if full_instruction:
                     try:
-                        wavs, sr = tts_custom.generate_custom_voice(text, speaker=voice_id, instruct=instruction, language=language)
+                        wavs, sr = tts_custom.generate_custom_voice(text, speaker=voice_id, instruct=full_instruction, language=language)
                     except Exception as e:
                         if "does not support generate_custom_voice" in str(e):
                             return jsonify({"error": "The loaded model does not support presets. Please ensure MODEL_ID is set to 'CustomVoice' in app.py."}), 400
@@ -445,6 +539,7 @@ def design_voice():
     text = data.get('text', '')
     description = data.get('description', '')
     lang_code = data.get('language', 'zh')
+    speed = data.get('speed', 1.0)
     language = LANGUAGE_MAP.get(lang_code, 'english')
     
     if not text or not description:
@@ -455,8 +550,13 @@ def design_voice():
     
     try:
         prepare_model('designer')
+        speed_ins = get_speed_instruction(speed, language)
+        prompt = description
+        if speed_ins:
+            prompt = f"{speed_ins} {description}"
+            
         with gpu_lock:
-            wavs, sr = voice_designer.generate_voice_design(text, instruct=description, language=language)
+            wavs, sr = voice_designer.generate_voice_design(text, instruct=prompt, language=language)
             
         if wavs is not None and len(wavs) > 0:
             audio = wavs[0]
