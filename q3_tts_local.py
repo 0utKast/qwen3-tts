@@ -8,8 +8,16 @@
 #     "soundfile",
 # ]
 # ///
+import os
 import sys
+import warnings
+import logging
 from pathlib import Path
+
+# Silence non-critical warnings and logs for a cleaner terminal experience
+warnings.filterwarnings("ignore")
+os.environ["TOKENIZERS_PARALLELISM"] = "false"
+logging.getLogger("transformers").setLevel(logging.ERROR)
 
 import click
 import numpy as np
