@@ -325,7 +325,7 @@ def get_speed_instruction(speed, language='english'):
     
     return ""
 
-def generation_worker(session_id, chunks, voice_id, instruction, language, mode, extra_info, speed=1.0):
+def generation_worker(session_id, chunks, voice_id, instruction, language, mode, extra_info, speed=1.0, engine='standard'):
     global tts_base, tts_custom, voice_designer
     session = SESSIONS[session_id]
     session_path = os.path.join(SESSION_DIR, session_id)
@@ -378,37 +378,95 @@ def generation_worker(session_id, chunks, voice_id, instruction, language, mode,
         start_time = time.time()
         
         try:
-            with gpu_lock:
-                print(f"[{session_id[:8]}] GPU Lock Acquired. Current Time: {time.strftime('%H:%M:%S')}")
-                if mode == 'design' or (custom_voice and custom_voice['type'] == 'design'):
-                    current_mode = 'design'
-                    prompt = extra_info if mode == 'design' else custom_voice['prompt']
-                    if speed_ins:
-                        prompt = f"{speed_ins} {prompt}"
-                    prepare_model('designer')
-                    wavs, sr = voice_designer.generate_voice_design(text, instruct=prompt, language=language)
-                    
-                elif mode == 'clone' or (custom_voice and custom_voice['type'] == 'clone'):
-                    current_mode = 'clone'
-                    prepare_model('tts')
-                    if cached_prompt:
-                        wavs, sr = tts_base.generate_voice_clone(text, voice_clone_prompt=cached_prompt, language=language)
-                    else:
-                        ref = extra_info if mode == 'clone' else custom_voice['ref_path']
-                        wavs, sr = tts_base.generate_voice_clone(text, ref_audio=ref, language=language, x_vector_only_mode=True)
-                        
-                else: # Preset/Standard
-                    prepare_model('tts')
-                    full_instruction = instruction
-                    if speed_ins:
-                        full_instruction = f"{speed_ins} {instruction}" if instruction else speed_ins.strip(',')
-                    
-                    if full_instruction:
-                        wavs, sr = tts_custom.generate_custom_voice(text, speaker=voice_id, instruct=full_instruction, language=language)
-                    else:
-                        wavs, sr = tts_custom.generate_custom_voice(text, speaker=voice_id, language=language)
+            if engine == 'optimized':
+                from q3_tts_tool import generate_speech
+                filepath = os.path.join(session_path, f"chunk_{i}.wav")
                 
-                print(f"[{session_id[:8]}] Model execution completed in {time.time() - start_time:.2f}s.")
+                # Optimized Engine Path
+                if mode == 'design' or (custom_voice and custom_voice['type'] == 'design'):
+                    # CONSISTENCY FIX: Design once, use as reference for the rest
+                    design_prompt = extra_info if mode == 'design' else custom_voice['prompt']
+                    if speed != 1.0:
+                        speed_ins = get_speed_instruction(speed, language)
+                        design_prompt = f"{speed_ins} {design_prompt}"
+                    
+                    ref_audio_path = os.path.join(session_path, "design_reference.wav")
+                    
+                    if i == 0:
+                        # First chunk: Design the voice and save it as reference
+                        session['status'] = "Designing voice (MLX)..."
+                        res = generate_speech(chunks[0], instruction=design_prompt, output_path=filepath)
+                        if "Success" in res:
+                            import shutil
+                            shutil.copy(filepath, ref_audio_path)
+                        else:
+                            raise ValueError(f"Optimized Design failed: {res}")
+                    else:
+                        # Subsequent chunks: CLONE the voice from the reference we just made
+                        session['status'] = f"Generating chunk {i+1}/{len(chunks)} (Consistent MLX)..."
+                        res = generate_speech(text, clone_path=ref_audio_path, output_path=filepath)
+                        if "Success" not in res:
+                            raise ValueError(f"Optimized Consistent Clone failed: {res}")
+                
+                elif mode == 'clone' or (custom_voice and custom_voice['type'] == 'clone'):
+                    ref = extra_info if mode == 'clone' else custom_voice['ref_path']
+                    res = generate_speech(text, clone_path=ref, output_path=filepath)
+                    if "Success" not in res:
+                        raise ValueError(f"Optimized Clone failed: {res}")
+                
+                else: # Preset
+                    # For presets in optimized mode, we use the original instruction if it's a "designed" preset
+                    # or just generate normally. 
+                    res = generate_speech(text, instruction=instruction, output_path=filepath)
+                    if "Success" not in res:
+                        raise ValueError(f"Optimized Preset failed: {res}")
+                
+                # Setup values for post-processing
+                wavs = [True] # Dummy to indicate success
+                sr = 24000 # Standard Qwen3 rate
+            else:
+                # Standard Torch Path
+                with gpu_lock:
+                    print(f"[{session_id[:8]}] GPU Lock Acquired. Current Time: {time.strftime('%H:%M:%S')}")
+                    if mode == 'design' or (custom_voice and custom_voice['type'] == 'design'):
+                        current_mode = 'design'
+                        prompt = extra_info if mode == 'design' else custom_voice['prompt']
+                        if speed_ins:
+                            prompt = f"{speed_ins} {prompt}"
+                        
+                        prepare_model('designer')
+                        
+                        # CONSISTENCY FIX for Standard Mode: Design chunk 0, then clone for the rest
+                        ref_audio_path = os.path.join(session_path, "design_reference.wav")
+                        if i == 0:
+                            wavs, sr = voice_designer.generate_voice_design(text, instruct=prompt, language=language)
+                            if wavs is not None:
+                                sf.write(ref_audio_path, wavs[0], sr)
+                        else:
+                            prepare_model('tts')
+                            wavs, sr = tts_base.generate_voice_clone(text, ref_audio=ref_audio_path, language=language, x_vector_only_mode=True)
+                        
+                    elif mode == 'clone' or (custom_voice and custom_voice['type'] == 'clone'):
+                        current_mode = 'clone'
+                        prepare_model('tts')
+                        if cached_prompt:
+                            wavs, sr = tts_base.generate_voice_clone(text, voice_clone_prompt=cached_prompt, language=language)
+                        else:
+                            ref = extra_info if mode == 'clone' else custom_voice['ref_path']
+                            wavs, sr = tts_base.generate_voice_clone(text, ref_audio=ref, language=language, x_vector_only_mode=True)
+                            
+                    else: # Preset/Standard
+                        prepare_model('tts')
+                        full_instruction = instruction
+                        if speed_ins:
+                            full_instruction = f"{speed_ins} {instruction}" if instruction else speed_ins.strip(',')
+                        
+                        if full_instruction:
+                            wavs, sr = tts_custom.generate_custom_voice(text, speaker=voice_id, instruct=full_instruction, language=language)
+                        else:
+                            wavs, sr = tts_custom.generate_custom_voice(text, speaker=voice_id, language=language)
+                    
+                    print(f"[{session_id[:8]}] Model execution completed in {time.time() - start_time:.2f}s.")
 
             if wavs is not None:
                 gen_time = time.time() - start_time
@@ -422,16 +480,15 @@ def generation_worker(session_id, chunks, voice_id, instruction, language, mode,
                     audio[:fade_len] *= fade_curve
                     audio[-fade_len:] *= fade_curve[::-1]
                 
-                filepath = os.path.join(session_path, f"chunk_{i}.wav")
-                sf.write(filepath, audio, sr)
+                if engine != 'optimized':
+                    filepath = os.path.join(session_path, f"chunk_{i}.wav")
+                    sf.write(filepath, audio, sr)
+                    clear_vram()
                 
                 session['ready_chunks'].append(i)
                 progress_pct = int((len(session['ready_chunks']) / len(chunks)) * 100)
                 session['status'] = f"Processing {len(session['ready_chunks'])}/{len(chunks)} ({progress_pct}%)"
                 print(f"[{session_id[:8]}] Chunk {i} saved in {gen_time:.2f}s.")
-                
-                # Cleanup VRAM after each chunk
-                clear_vram()
             else:
                 raise ValueError("Generation failed to return audio")
                     
@@ -461,7 +518,9 @@ def stream_start():
     extra_info = data.get('extra_info', '') # ref_path or description
     speed = data.get('speed', 1.0)
     
-    if not models_ready:
+    engine = data.get('engine', 'standard')
+    
+    if not models_ready and engine == 'standard':
         return jsonify({"error": "Models are still loading. Please wait."}), 503
     
     if not text:
@@ -478,7 +537,7 @@ def stream_start():
         "error": None
     }
     
-    thread = threading.Thread(target=generation_worker, args=(session_id, chunks, voice_id, instruction, language, mode, extra_info, speed))
+    thread = threading.Thread(target=generation_worker, args=(session_id, chunks, voice_id, instruction, language, mode, extra_info, speed, engine))
     thread.start()
     
     return jsonify({"session_id": session_id, "total_chunks": len(chunks)})
