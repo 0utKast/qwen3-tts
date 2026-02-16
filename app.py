@@ -468,22 +468,29 @@ def generation_worker(session_id, chunks, voice_id, instruction, language, mode,
                     
                     print(f"[{session_id[:8]}] Model execution completed in {time.time() - start_time:.2f}s.")
 
+            if engine == 'optimized':
+                # Setup dummy values to bypass 'wavs is not None' check if needed, 
+                # but we'll handle the success here and skip to next chunk.
+                session['ready_chunks'].append(i)
+                progress_pct = int((len(session['ready_chunks']) / len(chunks)) * 100)
+                session['status'] = f"Processing {len(session['ready_chunks'])}/{len(chunks)} ({progress_pct}%)"
+                print(f"[{session_id[:8]}] Chunk {i} generated via MLX.")
+                continue # SKIP post-processing for optimized engine
+
             if wavs is not None:
                 gen_time = time.time() - start_time
                 audio = wavs[0]
                 
                 # APPLY SOFT FADE (5ms) to prevent clicks between chunks
-                # 5ms = samplerate * 0.005
                 fade_len = int(sr * 0.005)
                 if len(audio) > fade_len * 2:
                     fade_curve = np.linspace(0, 1, fade_len)
                     audio[:fade_len] *= fade_curve
                     audio[-fade_len:] *= fade_curve[::-1]
                 
-                if engine != 'optimized':
-                    filepath = os.path.join(session_path, f"chunk_{i}.wav")
-                    sf.write(filepath, audio, sr)
-                    clear_vram()
+                filepath = os.path.join(session_path, f"chunk_{i}.wav")
+                sf.write(filepath, audio, sr)
+                clear_vram()
                 
                 session['ready_chunks'].append(i)
                 progress_pct = int((len(session['ready_chunks']) / len(chunks)) * 100)

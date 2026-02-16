@@ -12,9 +12,13 @@ def generate_speech(text, instruction=None, clone_path=None, output_path="output
         clone_path (str, optional): Path to a 3-second audio sample for voice cloning.
         output_path (str, optional): Path where the output wav file will be saved.
     """
+    script_path = os.path.join(os.path.dirname(__file__), "q3_tts_local.py")
+    if not os.path.exists(script_path):
+        return f"Error: Local script '{script_path}' not found. Please ensure q3_tts_local.py is in the same directory."
+
     cmd = [
         "uv", "run", 
-        "https://tools.simonwillison.net/python/q3_tts.py", 
+        script_path, 
         text, 
         "-o", output_path
     ]
