@@ -1,6 +1,10 @@
 import subprocess
 import os
 import sys
+import threading
+import queue
+import time
+from pathlib import Path
 
 def generate_speech(text, instruction=None, clone_path=None, output_path="output.wav"):
     """
@@ -16,24 +20,20 @@ def generate_speech(text, instruction=None, clone_path=None, output_path="output
     if not os.path.exists(script_path):
         return f"Error: Local script '{script_path}' not found. Please ensure q3_tts_local.py is in the same directory."
 
-    cmd = [
-        "uv", "run", 
-        script_path, 
-        text, 
-        "-o", output_path
-    ]
-    
+    # Use -- to separate uv from script arguments
+    cmd = ["uv", "run", str(script_path), "--", str(text), "-o", str(output_path), "-v"]
     if instruction:
-        cmd.extend(["-i", instruction])
-    
+        cmd.extend(["-i", str(instruction)])
     if clone_path:
         if not os.path.exists(clone_path):
             return f"Error: Clone path '{clone_path}' does not exist."
-        cmd.extend(["--clone", clone_path])
+        cmd.extend(["--clone", str(clone_path)])
     
+    # Cast everything to string for safety
+    cmd = [str(c) for c in cmd]
     print(f"Executing: {' '.join(cmd)}", flush=True)
+    
     try:
-        # Use Popen to stream output in real-time
         process = subprocess.Popen(
             cmd, 
             stdout=subprocess.PIPE, 
@@ -43,21 +43,50 @@ def generate_speech(text, instruction=None, clone_path=None, output_path="output
             universal_newlines=True
         )
         
-        # Read output line by line
-        for line in process.stdout:
-            print(f"  [uv output] {line.strip()}", flush=True)
+        # Thread-safe queue for process output
+        output_queue = queue.Queue()
         
-        # Wait for completion with timeout
-        process.wait(timeout=90)
+        def stream_reader(pipe, q):
+            try:
+                for line in iter(pipe.readline, ''):
+                    q.put(line)
+                pipe.close()
+            except Exception:
+                pass
+
+        # Start background thread to read output
+        reader_thread = threading.Thread(target=stream_reader, args=(process.stdout, output_queue))
+        reader_thread.daemon = True
+        reader_thread.start()
+        
+        start_time = time.time()
+        timeout = 160 # Increased timeout for M4 Pro loading + generation
+        
+        while True:
+            # Check for new output lines
+            try:
+                line = output_queue.get_nowait()
+                print(f"  [uv output] {line.strip()}", flush=True)
+            except queue.Empty:
+                # No output, check if process finished
+                if process.poll() is not None:
+                    break
+                
+                # Check for timeout
+                if time.time() - start_time > timeout:
+                    process.kill()
+                    return f"Error: Command timed out after {timeout} seconds."
+                
+                time.sleep(0.1) # Avoid busy loop
+        
+        # Wait for thread to finish (it should have since pipe is closed)
+        reader_thread.join(timeout=1)
         
         if process.returncode == 0:
             return f"Success: Audio saved to {output_path}"
         else:
             return f"Error: Command failed with exit code {process.returncode}"
             
-    except subprocess.TimeoutExpired:
-        process.kill()
-        return f"Error: Command timed out after 90 seconds."
     except Exception as e:
         if 'process' in locals(): process.kill()
         return f"Error: An unexpected error occurred: {str(e)}"

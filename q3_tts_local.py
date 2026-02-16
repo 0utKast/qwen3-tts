@@ -80,11 +80,14 @@ def main(text: str | None, output: str, language: str, instruct: str | None, ver
         output_path = get_unique_filename(output_path)
     
     if verbose:
-        click.echo(f"Loading model...")
+        click.echo(f"Step 1: Loading model Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign...", err=True)
+    
+    # Force GPU usage if possible or log device
     model = load_model("Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
     
     if verbose:
-        click.echo(f"Generating audio for: {text[:50]}{'...' if len(text) > 50 else ''}")
+        click.echo(f"Step 2: Model loaded successfully.", err=True)
+        click.echo(f"Generating audio for: {text[:50]}{'...' if len(text) > 50 else ''}", err=True)
     
     # Build generation kwargs
     gen_kwargs = {
@@ -94,8 +97,14 @@ def main(text: str | None, output: str, language: str, instruct: str | None, ver
         "instruct": instruct or "",
     }
     
+    if verbose:
+        click.echo(f"Step 3: Starting generation process...", err=True)
+    
     # Generate with voice description
     results = list(model.generate_voice_design(**gen_kwargs))
+    
+    if verbose:
+        click.echo(f"Step 4: Generation complete. Saving audio...", err=True)
     
     audio = results[0].audio
     
