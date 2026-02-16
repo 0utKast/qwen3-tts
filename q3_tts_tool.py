@@ -20,8 +20,8 @@ def generate_speech(text, instruction=None, clone_path=None, output_path="output
     if not os.path.exists(script_path):
         return f"Error: Local script '{script_path}' not found. Please ensure q3_tts_local.py is in the same directory."
 
-    # Click expects options BEFORE arguments
-    cmd = ["uv", "run", str(script_path), "--"]
+    # uv run script.py [options] [args]
+    cmd = ["uv", "run", str(script_path)]
     
     # Add options first
     cmd.extend(["-o", str(output_path), "-v"])

@@ -56,11 +56,11 @@ class CustomHelpCommand(click.Command):
 
 
 @click.command(cls=CustomHelpCommand)
-@click.argument("text", required=False)
 @click.option("-o", "--output", default="output.wav", help="Output filename (default: output.wav)")
 @click.option("-l", "--language", default="English", help="Language for TTS (default: English)")
 @click.option("-i", "--instruct", default=None, help="Voice instruction (e.g., 'deep low voice')")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose output")
+@click.argument("text", required=False)
 def main(text: str | None, output: str, language: str, instruct: str | None, verbose: bool):
     """Generate audio using Qwen3-TTS and MLX Audio."""
     # Handle piped input
