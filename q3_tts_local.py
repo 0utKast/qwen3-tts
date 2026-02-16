@@ -59,9 +59,10 @@ class CustomHelpCommand(click.Command):
 @click.option("-o", "--output", default="output.wav", help="Output filename (default: output.wav)")
 @click.option("-l", "--language", default="English", help="Language for TTS (default: English)")
 @click.option("-i", "--instruct", default=None, help="Voice instruction (e.g., 'deep low voice')")
+@click.option("-c", "--clone", default=None, help="Path to reference audio for cloning")
 @click.option("-v", "--verbose", is_flag=True, help="Enable verbose output")
 @click.argument("text", required=False)
-def main(text: str | None, output: str, language: str, instruct: str | None, verbose: bool):
+def main(text: str | None, output: str, language: str, instruct: str | None, clone: str | None, verbose: bool):
     """Generate audio using Qwen3-TTS and MLX Audio."""
     # Handle piped input
     if text is None:
@@ -79,29 +80,44 @@ def main(text: str | None, output: str, language: str, instruct: str | None, ver
         # Only auto-increment for default filename
         output_path = get_unique_filename(output_path)
     
+    # Determine model to load
+    model_id = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
+    if clone:
+        model_id = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
+        
     if verbose:
-        click.echo(f"Step 1: Loading model Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign...", err=True)
+        click.echo(f"Step 1: Loading model {model_id}...", err=True)
     
-    # Force GPU usage if possible or log device
-    model = load_model("Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign")
+    model = load_model(model_id)
     
     if verbose:
         click.echo(f"Step 2: Model loaded successfully.", err=True)
         click.echo(f"Generating audio for: {text[:50]}{'...' if len(text) > 50 else ''}", err=True)
     
-    # Build generation kwargs
-    gen_kwargs = {
-        "text": text,
-        "language": language,
-        "verbose": verbose,
-        "instruct": instruct or "",
-    }
-    
     if verbose:
         click.echo(f"Step 3: Starting generation process...", err=True)
     
-    # Generate with voice description
-    results = list(model.generate_voice_design(**gen_kwargs))
+    if clone:
+        # Build generation kwargs for cloning
+        gen_kwargs = {
+            "text": text,
+            "ref_audio": clone,
+            "language": language,
+            "verbose": verbose,
+            "x_vector_only_mode": True
+        }
+        # Generate with voice cloning
+        results = list(model.generate_voice_clone(**gen_kwargs))
+    else:
+        # Build generation kwargs for voice design
+        gen_kwargs = {
+            "text": text,
+            "language": language,
+            "verbose": verbose,
+            "instruct": instruct or "",
+        }
+        # Generate with voice design
+        results = list(model.generate_voice_design(**gen_kwargs))
     
     if verbose:
         click.echo(f"Step 4: Generation complete. Saving audio...", err=True)
