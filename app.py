@@ -233,14 +233,27 @@ def clear_vram(force=False):
         torch.mps.empty_cache()
     print("--- VRAM Cleared ---", flush=True)
 
+def move_to_device(model, target_device):
+    """Safely move Qwen3TTSModel or underlying torch model to device."""
+    if model is None: return
+    try:
+        if hasattr(model, 'to'):
+            model.to(target_device)
+        elif hasattr(model, 'model') and hasattr(model.model, 'to'):
+            model.model.to(target_device)
+        else:
+            print(f"Warning: Model type {type(model)} has no 'to' attribute and no '.model' attribute.")
+    except Exception as e:
+        print(f"Error moving {type(model)} to {target_device}: {e}")
+
 def release_gpu_memory():
     """Move all models to CPU to free up MPS for MLX."""
     global tts_custom, tts_base, voice_designer
     print("--- RELEASING GPU memory (Torch -> CPU) for MLX path... ---", flush=True)
     try:
-        if tts_custom: tts_custom.to("cpu")
-        if tts_base: tts_base.to("cpu")
-        if voice_designer: voice_designer.to("cpu")
+        move_to_device(tts_custom, "cpu")
+        move_to_device(tts_base, "cpu")
+        move_to_device(voice_designer, "cpu")
         clear_vram(force=True)
     except Exception as e:
         print(f"Warning during memory release: {e}", flush=True)
@@ -250,12 +263,11 @@ def acquire_gpu_memory(model_type='all'):
     global tts_custom, tts_base, voice_designer
     print(f"--- ACQUIRING GPU memory (CPU -> {device}) for {model_type}... ---", flush=True)
     try:
-        if (model_type == 'all' or model_type == 'tts') and tts_base: 
-            tts_base.to(device)
-        if (model_type == 'all' or model_type == 'tts') and tts_custom: 
-            tts_custom.to(device)
-        if (model_type == 'all' or model_type == 'designer') and voice_designer: 
-            voice_designer.to(device)
+        if (model_type == 'all' or model_type == 'tts'):
+            move_to_device(tts_base, device)
+            move_to_device(tts_custom, device)
+        if (model_type == 'all' or model_type == 'designer'):
+            move_to_device(voice_designer, device)
         clear_vram()
     except Exception as e:
         print(f"Error during memory acquisition: {e}", flush=True)
