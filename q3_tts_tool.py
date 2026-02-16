@@ -31,13 +31,35 @@ def generate_speech(text, instruction=None, clone_path=None, output_path="output
             return f"Error: Clone path '{clone_path}' does not exist."
         cmd.extend(["--clone", clone_path])
     
+    print(f"Executing: {' '.join(cmd)}", flush=True)
     try:
-        print(f"Executing: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        return f"Success: Audio saved to {output_path}"
-    except subprocess.CalledProcessError as e:
-        return f"Error: Command failed with exit code {e.returncode}. \nStdout: {e.stdout}\nStderr: {e.stderr}"
+        # Use Popen to stream output in real-time
+        process = subprocess.Popen(
+            cmd, 
+            stdout=subprocess.PIPE, 
+            stderr=subprocess.STDOUT, 
+            text=True,
+            bufsize=1,
+            universal_newlines=True
+        )
+        
+        # Read output line by line
+        for line in process.stdout:
+            print(f"  [uv output] {line.strip()}", flush=True)
+        
+        # Wait for completion with timeout
+        process.wait(timeout=90)
+        
+        if process.returncode == 0:
+            return f"Success: Audio saved to {output_path}"
+        else:
+            return f"Error: Command failed with exit code {process.returncode}"
+            
+    except subprocess.TimeoutExpired:
+        process.kill()
+        return f"Error: Command timed out after 90 seconds."
     except Exception as e:
+        if 'process' in locals(): process.kill()
         return f"Error: An unexpected error occurred: {str(e)}"
 
 if __name__ == "__main__":

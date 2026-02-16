@@ -223,30 +223,47 @@ gpu_lock = threading.Lock()
 
 def clear_vram(force=False):
     """Optimized memory cleanup for MPS/CUDA with synchronization."""
+    import gc
     gc.collect()
     if device == "cuda":
         torch.cuda.empty_cache()
         torch.cuda.synchronize()
     elif device == "mps":
-        # Synchronize before clearing cache to ensure no operations are pending
-        # This helps prevent stalls and deadlocks on Apple Silicon
         torch.mps.synchronize()
         torch.mps.empty_cache()
+    print("--- VRAM Cleared ---", flush=True)
 
-def move_to_device(model, target_device):
-    """Safely move model to device, checking wrapper and underlying model."""
-    if model is None: return
+def release_gpu_memory():
+    """Move all models to CPU to free up MPS for MLX."""
+    global tts_custom, tts_base, voice_designer
+    print("--- RELEASING GPU memory (Torch -> CPU) for MLX path... ---", flush=True)
     try:
-        if hasattr(model, 'to'):
-            model.to(target_device)
-        elif hasattr(model, 'model') and hasattr(model.model, 'to'):
-            model.model.to(target_device)
+        if tts_custom: tts_custom.to("cpu")
+        if tts_base: tts_base.to("cpu")
+        if voice_designer: voice_designer.to("cpu")
+        clear_vram(force=True)
     except Exception as e:
-        print(f"Warning: Could not move model to {target_device}: {e}")
+        print(f"Warning during memory release: {e}", flush=True)
+
+def acquire_gpu_memory(model_type='all'):
+    """Move requested models back to MPS."""
+    global tts_custom, tts_base, voice_designer
+    print(f"--- ACQUIRING GPU memory (CPU -> {device}) for {model_type}... ---", flush=True)
+    try:
+        if (model_type == 'all' or model_type == 'tts') and tts_base: 
+            tts_base.to(device)
+        if (model_type == 'all' or model_type == 'tts') and tts_custom: 
+            tts_custom.to(device)
+        if (model_type == 'all' or model_type == 'designer') and voice_designer: 
+            voice_designer.to(device)
+        clear_vram()
+    except Exception as e:
+        print(f"Error during memory acquisition: {e}", flush=True)
 
 def prepare_model(model_type):
-    """Placeholder for consistency, all three variants stay on Device."""
-    pass
+    """Ensure models are on the correct device."""
+    if not models_ready: return
+    acquire_gpu_memory(model_type)
 
 def split_text_streaming(text, first_chunk_len=400, target_len=900):
     """Balanced splitting for Mac: large enough for prosody, small enough for responsiveness."""
@@ -379,55 +396,59 @@ def generation_worker(session_id, chunks, voice_id, instruction, language, mode,
         
         try:
             if engine == 'optimized':
-                from q3_tts_tool import generate_speech
-                filepath = os.path.join(session_path, f"chunk_{i}.wav")
-                
-                # Optimized Engine Path
-                if mode == 'design' or (custom_voice and custom_voice['type'] == 'design'):
-                    # CONSISTENCY FIX: Design once, use as reference for the rest
-                    design_prompt = extra_info if mode == 'design' else custom_voice['prompt']
-                    if speed != 1.0:
-                        speed_ins = get_speed_instruction(speed, language)
-                        design_prompt = f"{speed_ins} {design_prompt}"
+                with gpu_lock:
+                    release_gpu_memory()
+                    from q3_tts_tool import generate_speech
+                    filepath = os.path.join(session_path, f"chunk_{i}.wav")
                     
-                    ref_audio_path = os.path.join(session_path, "design_reference.wav")
-                    
-                    if i == 0:
-                        # First chunk: Design the voice and save it as reference
-                        session['status'] = "Designing voice (MLX)..."
-                        res = generate_speech(chunks[0], instruction=design_prompt, output_path=filepath)
-                        if "Success" in res:
-                            import shutil
-                            shutil.copy(filepath, ref_audio_path)
+                    # Optimized Engine Path
+                    if mode == 'design' or (custom_voice and custom_voice['type'] == 'design'):
+                        # CONSISTENCY FIX: Design once, use as reference for the rest
+                        design_prompt = extra_info if mode == 'design' else custom_voice['prompt']
+                        if speed != 1.0:
+                            speed_ins = get_speed_instruction(speed, language)
+                            design_prompt = f"{speed_ins} {design_prompt}"
+                        
+                        ref_audio_path = os.path.join(session_path, "design_reference.wav")
+                        
+                        if i == 0:
+                            # First chunk: Design the voice and save it as reference
+                            session['status'] = "Designing voice (MLX)..."
+                            print(f"[{session_id[:8]}] Calling MLX Voice Design...", flush=True)
+                            res = generate_speech(chunks[0], instruction=design_prompt, output_path=filepath)
+                            if "Success" in res:
+                                import shutil
+                                shutil.copy(filepath, ref_audio_path)
+                            else:
+                                raise ValueError(f"Optimized Design failed: {res}")
                         else:
-                            raise ValueError(f"Optimized Design failed: {res}")
-                    else:
-                        # Subsequent chunks: CLONE the voice from the reference we just made
-                        session['status'] = f"Generating chunk {i+1}/{len(chunks)} (Consistent MLX)..."
-                        res = generate_speech(text, clone_path=ref_audio_path, output_path=filepath)
+                            # Subsequent chunks: CLONE the voice from the reference we just made
+                            session['status'] = f"Generating chunk {i+1}/{len(chunks)} (Consistent MLX)..."
+                            print(f"[{session_id[:8]}] Calling MLX Voice Clone (Consistent)...", flush=True)
+                            res = generate_speech(text, clone_path=ref_audio_path, output_path=filepath)
+                            if "Success" not in res:
+                                raise ValueError(f"Optimized Consistent Clone failed: {res}")
+                    
+                    elif mode == 'clone' or (custom_voice and custom_voice['type'] == 'clone'):
+                        ref = extra_info if mode == 'clone' else custom_voice['ref_path']
+                        print(f"[{session_id[:8]}] Calling MLX Voice Clone...", flush=True)
+                        res = generate_speech(text, clone_path=ref, output_path=filepath)
                         if "Success" not in res:
-                            raise ValueError(f"Optimized Consistent Clone failed: {res}")
+                            raise ValueError(f"Optimized Clone failed: {res}")
+                    
+                    else: # Preset
+                        print(f"[{session_id[:8]}] Calling MLX Preset...", flush=True)
+                        res = generate_speech(text, instruction=instruction, output_path=filepath)
+                        if "Success" not in res:
+                            raise ValueError(f"Optimized Preset failed: {res}")
                 
-                elif mode == 'clone' or (custom_voice and custom_voice['type'] == 'clone'):
-                    ref = extra_info if mode == 'clone' else custom_voice['ref_path']
-                    res = generate_speech(text, clone_path=ref, output_path=filepath)
-                    if "Success" not in res:
-                        raise ValueError(f"Optimized Clone failed: {res}")
-                
-                else: # Preset
-                    # For presets in optimized mode, we use the original instruction if it's a "designed" preset
-                    # or just generate normally. 
-                    res = generate_speech(text, instruction=instruction, output_path=filepath)
-                    if "Success" not in res:
-                        raise ValueError(f"Optimized Preset failed: {res}")
-                
-                # Setup values for post-processing
-                wavs = [True] # Dummy to indicate success
-                sr = 24000 # Standard Qwen3 rate
+                    # Setup values for post-processing
+                    wavs = [True] # Dummy to indicate success
+                    sr = 24000 # Standard Qwen3 rate
             else:
                 # Standard Torch Path
                 with gpu_lock:
-                    print(f"[{session_id[:8]}] GPU Lock Acquired. Current Time: {time.strftime('%H:%M:%S')}")
+                    print(f"[{session_id[:8]}] GPU Lock Acquired. Current Time: {time.strftime('%H:%M:%S')}", flush=True)
                     if mode == 'design' or (custom_voice and custom_voice['type'] == 'design'):
                         current_mode = 'design'
                         prompt = extra_info if mode == 'design' else custom_voice['prompt']
@@ -474,7 +495,7 @@ def generation_worker(session_id, chunks, voice_id, instruction, language, mode,
                 session['ready_chunks'].append(i)
                 progress_pct = int((len(session['ready_chunks']) / len(chunks)) * 100)
                 session['status'] = f"Processing {len(session['ready_chunks'])}/{len(chunks)} ({progress_pct}%)"
-                print(f"[{session_id[:8]}] Chunk {i} generated via MLX.")
+                print(f"[{session_id[:8]}] Chunk {i} generated via MLX.", flush=True)
                 continue # SKIP post-processing for optimized engine
 
             if wavs is not None:
