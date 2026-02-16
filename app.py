@@ -237,10 +237,11 @@ def move_to_device(model, target_device):
     """Safely move Qwen3TTSModel or underlying torch model to device."""
     if model is None: return
     try:
-        if hasattr(model, 'to'):
-            model.to(target_device)
-        elif hasattr(model, 'model') and hasattr(model.model, 'to'):
+        # Check for model.model first (the underlying torch module in Qwen3TTSModel)
+        if hasattr(model, 'model') and hasattr(model.model, 'to'):
             model.model.to(target_device)
+        elif hasattr(model, 'to'):
+            model.to(target_device)
         else:
             print(f"Warning: Model type {type(model)} has no 'to' attribute and no '.model' attribute.")
     except Exception as e:
@@ -415,31 +416,30 @@ def generation_worker(session_id, chunks, voice_id, instruction, language, mode,
                     
                     # Optimized Engine Path
                     if mode == 'design' or (custom_voice and custom_voice['type'] == 'design'):
-                        # CONSISTENCY FIX: Design once, use as reference for the rest
-                        design_prompt = extra_info if mode == 'design' else custom_voice['prompt']
-                        if speed != 1.0:
-                            speed_ins = get_speed_instruction(speed, language)
-                            design_prompt = f"{speed_ins} {design_prompt}"
-                        
                         ref_audio_path = os.path.join(session_path, "design_reference.wav")
                         
-                        if i == 0:
-                            # First chunk: Design the voice and save it as reference
-                            session['status'] = "Designing voice (MLX)..."
-                            print(f"[{session_id[:8]}] Calling MLX Voice Design...", flush=True)
-                            res = generate_speech(chunks[0], instruction=design_prompt, output_path=filepath)
-                            if "Success" in res:
-                                import shutil
-                                shutil.copy(filepath, ref_audio_path)
-                            else:
-                                raise ValueError(f"Optimized Design failed: {res}")
-                        else:
-                            # Subsequent chunks: CLONE the voice from the reference we just made
-                            session['status'] = f"Generating chunk {i+1}/{len(chunks)} (Consistent MLX)..."
-                            print(f"[{session_id[:8]}] Calling MLX Voice Clone (Consistent)...", flush=True)
-                            res = generate_speech(text, clone_path=ref_audio_path, output_path=filepath)
+                        if not os.path.exists(ref_audio_path):
+                            # PHASE 0: Design the voice DNA once with a SMALL snippet of the first chunk
+                            session['status'] = "Designing voice Identity (MLX)..."
+                            design_prompt = extra_info if mode == 'design' else custom_voice['prompt']
+                            if speed != 1.0:
+                                speed_ins = get_speed_instruction(speed, language)
+                                design_prompt = f"{speed_ins} {design_prompt}"
+                            
+                            # Use only first ~15 words for design to avoid hangs and complexity
+                            design_snippet = ' '.join(chunks[0].split()[:15])
+                            print(f"[{session_id[:8]}] Designing Identity with: {design_snippet[:50]}...", flush=True)
+                            
+                            res = generate_speech(design_snippet, instruction=design_prompt, output_path=ref_audio_path)
                             if "Success" not in res:
-                                raise ValueError(f"Optimized Consistent Clone failed: {res}")
+                                raise ValueError(f"Optimized Identity Design failed: {res}")
+                        
+                        # ALL chunks (including i=0) now use CLONE with the reference DNA we just created
+                        session['status'] = f"Generating chunk {i+1}/{len(chunks)} (MLX Consistent)..."
+                        print(f"[{session_id[:8]}] Calling MLX Voice Clone for chunk {i}...", flush=True)
+                        res = generate_speech(text, clone_path=ref_audio_path, output_path=filepath)
+                        if "Success" not in res:
+                            raise ValueError(f"Optimized Consistent Clone failed: {res}")
                     
                     elif mode == 'clone' or (custom_voice and custom_voice['type'] == 'clone'):
                         ref = extra_info if mode == 'clone' else custom_voice['ref_path']
@@ -463,22 +463,28 @@ def generation_worker(session_id, chunks, voice_id, instruction, language, mode,
                     print(f"[{session_id[:8]}] GPU Lock Acquired. Current Time: {time.strftime('%H:%M:%S')}", flush=True)
                     if mode == 'design' or (custom_voice and custom_voice['type'] == 'design'):
                         current_mode = 'design'
-                        prompt = extra_info if mode == 'design' else custom_voice['prompt']
-                        if speed_ins:
-                            prompt = f"{speed_ins} {prompt}"
                         
-                        prepare_model('designer')
-                        
-                        # CONSISTENCY FIX for Standard Mode: Design chunk 0, then clone for the rest
+                        # CONSISTENCY FIX for Standard Mode: Design DNA once, then clone for EVERY chunk
                         ref_audio_path = os.path.join(session_path, "design_reference.wav")
-                        if i == 0:
-                            wavs, sr = voice_designer.generate_voice_design(text, instruct=prompt, language=language)
-                            if wavs is not None:
-                                sf.write(ref_audio_path, wavs[0], sr)
-                        else:
-                            prepare_model('tts')
-                            wavs, sr = tts_base.generate_voice_clone(text, ref_audio=ref_audio_path, language=language, x_vector_only_mode=True)
+                        if not os.path.exists(ref_audio_path):
+                            session['status'] = "Designing voice Identity (Torch)..."
+                            prompt = extra_info if mode == 'design' else custom_voice['prompt']
+                            if speed_ins:
+                                prompt = f"{speed_ins} {prompt}"
+                            
+                            design_snippet = ' '.join(chunks[0].split()[:15])
+                            print(f"[{session_id[:8]}] Designing Identity (Torch) with: {design_snippet[:50]}...", flush=True)
+                            prepare_model('designer')
+                            wavs_ref, sr_ref = voice_designer.generate_voice_design(design_snippet, instruct=prompt, language=language)
+                            if wavs_ref is not None:
+                                sf.write(ref_audio_path, wavs_ref[0], sr_ref)
+                            else:
+                                raise ValueError("Torch Identity Design failed")
                         
+                        # Clone for all chunks (including i=0) for consistency
+                        prepare_model('tts')
+                        wavs, sr = tts_base.generate_voice_clone(text, ref_audio=ref_audio_path, language=language, x_vector_only_mode=True)
+                            
                     elif mode == 'clone' or (custom_voice and custom_voice['type'] == 'clone'):
                         current_mode = 'clone'
                         prepare_model('tts')
