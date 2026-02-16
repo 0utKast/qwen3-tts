@@ -1,6 +1,6 @@
-# Qwen3-TTS Studio 🚀
+# Qwen3-TTS Studio 🚀 v1.1.0
 
-Una interfaz web moderna y potente para el nuevo ecosistema **Qwen3-TTS** de Alibaba. Diseñada específicamente para aprovechar la potencia de las GPUs NVIDIA (especialmente optimizada para RTX 3090/4090 con 24GB de VRAM).
+Una interfaz web moderna y potente para el nuevo ecosistema **Qwen3-TTS** de Alibaba. Optimizada tanto para GPUs NVIDIA (RTX 3090/4090) como para **Apple Silicon (Mac Mini M4)**.
 
 Este estudio permite tres funciones principales en una sola aplicación:
 1. **Premium Presets**: Voces predefinidas de alta calidad (Vivian, Ryan, Sohee, Aiden).
@@ -9,18 +9,20 @@ Este estudio permite tres funciones principales en una sola aplicación:
 
 ## 🛠️ Características Principales
 
-- **Multi-Model Engine**: Carga simultáneamente las variantes `Base`, `CustomVoice` y `VoiceDesign` en la GPU para cambios instantáneos.
-- **Voice Library**: Guarda tus diseños y clones favoritos con nombres y descripciones personalizadas.
-- **Drag-and-Drop**: Soporte para arrastrar archivos de audio para clonación rápida.
-- **Procesamiento PDF**: Extrae texto de archivos PDF para lectura masiva.
-- **Optimización RTX 3090**: Gestión de memoria optimizada para 24GB VRAM, evitando fragmentación y maximizando la velocidad.
+- **Multi-Model Engine**: Soporte para motores estándar (Torch) y **Optimizado (MLX + uv)**.
+- **Apple Silicon Native**: Integración con `mlx-audio` para latencia ultra-baja en chips M4/M3/M2.
+- **uv Integration**: Uso de `uv` para una ejecución y gestión de dependencias instantánea.
+- **Voice Library**: Guarda tus diseños y clones favoritos con nombres personalizados.
+- **Drag-and-Drop**: Soporte para arrastrar archivos de audio y PDFs.
+- **Optimización VRAM**: Gestión inteligente de memoria unificada en Mac y VRAM dedicada en NVIDIA.
 
 ## 📋 Requisitos
 
-- **OS**: Windows (probado en Windows 11) o Linux (WSL2 recomendado).
-- **GPU**: NVIDIA con al menos 12GB de VRAM (24GB recomendado para carga triple de modelos).
-- **Python**: 3.8+
-- **Conda**: Recomendado para la gestión del entorno.
+- **OS**: macOS (Apple Silicon), Windows (NVIDIA) o Linux.
+- **Hardware**: 
+  - **Mac**: Chip M-series (M4 Pro recomendado) para el motor optimizado.
+  - **NVIDIA**: Al menos 12GB de VRAM (24GB recomendado).
+- **Herramientas**: `uv` (recomendado para Mac), Python 3.11+
 
 ## 🚀 Instalación y Configuración
 

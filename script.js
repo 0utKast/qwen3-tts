@@ -19,14 +19,28 @@ document.addEventListener('DOMContentLoaded', () => {
     let selectedVoice = null;
     let selectedFile = null;
 
+    // Global Drag & Drop Prevention
+    window.addEventListener('dragover', (e) => e.preventDefault());
+    window.addEventListener('drop', (e) => e.preventDefault());
+
+    // --- Streaming Queue Logic ---
+    let playQueue = [];
+    let currentSessionId = null;
+    let currentlyPlayingIndex = -1;
+    let isAutoPlaying = false;
+    let totalChunksInSession = 0;
+    let isPlaybackStalled = false;
+
     // Load voices
     async function loadVoices() {
         try {
             const res = await fetch('/api/voices');
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const voices = await res.json();
             voiceSelector.innerHTML = voices.map(v => `
                 <div class="voice-card ${v.type || 'preset'}" data-id="${v.id}">
                     <div class="voice-badge">${v.type === 'preset' ? 'Official' : 'Custom'}</div>
+                    ${v.type !== 'preset' ? `<button class="delete-voice-btn" title="Delete voice">×</button>` : ''}
                     <h4>${v.name}</h4>
                     <p>${v.description}</p>
                 </div>
@@ -37,6 +51,30 @@ document.addEventListener('DOMContentLoaded', () => {
                     document.querySelectorAll('.voice-card').forEach(c => c.classList.remove('selected'));
                     card.classList.add('selected');
                     selectedVoice = card.dataset.id;
+                });
+            });
+
+            // Add delete listeners
+            document.querySelectorAll('.delete-voice-btn').forEach(btn => {
+                btn.addEventListener('click', async (e) => {
+                    e.stopPropagation(); // Avoid selecting the card
+                    const card = e.target.closest('.voice-card');
+                    const voiceId = card.dataset.id;
+                    const voiceName = card.querySelector('h4').innerText;
+
+                    if (confirm(`¿Estás seguro de que quieres eliminar la voz "${voiceName}"?`)) {
+                        try {
+                            const delRes = await fetch(`/api/voices/delete/${voiceId}`, { method: 'POST' });
+                            if (delRes.ok) {
+                                loadVoices(); // Refresh list
+                            } else {
+                                const err = await delRes.json();
+                                alert('Error al eliminar: ' + (err.error || 'Unknown error'));
+                            }
+                        } catch (err) {
+                            console.error('Error deleting voice', err);
+                        }
+                    }
                 });
             });
         } catch (e) {
@@ -115,27 +153,39 @@ document.addEventListener('DOMContentLoaded', () => {
     const saveDesignBtn = document.getElementById('save-design-btn');
     const saveCloneBtn = document.getElementById('save-clone-btn');
 
-    async function saveVoice(type, value) {
+    async function saveVoice(type, value, audioFile = null) {
         const name = prompt(`Enter a name for this ${type} voice:`);
         if (!name) return;
 
         const description = prompt(`Enter a short description for "${name}":`);
 
         try {
-            const res = await fetch('/api/voices/save', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name, description, type, value })
-            });
+            let res;
+            if (type === 'clone' && audioFile) {
+                const formData = new FormData();
+                formData.append('name', name);
+                formData.append('description', description || '');
+                formData.append('type', type);
+                formData.append('audio', audioFile);
+                res = await fetch('/api/voices/save', { method: 'POST', body: formData });
+            } else {
+                res = await fetch('/api/voices/save', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, description, type, value })
+                });
+            }
+
             const result = await res.json();
             if (result.success) {
-                alert('Voice saved to library!');
+                alert('¡Voz guardada correctamente!');
                 loadVoices();
             } else {
-                alert('Error saving: ' + result.error);
+                alert('Error al guardar: ' + result.error);
             }
         } catch (e) {
             console.error(e);
+            alert('Error de conexión al guardar la voz');
         }
     }
 
@@ -146,11 +196,8 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     saveCloneBtn.addEventListener('click', () => {
-        if (!selectedFile) return alert('Please select or drop an audio file first');
-        // Since the file is handled via FormData in /api/clone, for simplification 
-        // we'll "save" after a successful clone or by tagging the last uploaded file.
-        // For now, we'll assume the backend can find 'temp_ref.wav' or we pass the context.
-        saveVoice('clone', 'temp_ref.wav');
+        if (!selectedFile) return alert('Por favor, selecciona o arrastra un archivo de audio primero');
+        saveVoice('clone', null, selectedFile);
     });
     // --- UI Progress Elements ---
     const progressContainer = document.getElementById('progress-container');
@@ -174,46 +221,62 @@ document.addEventListener('DOMContentLoaded', () => {
         outputCard.classList.add('hidden');
 
         try {
+            // 0. Check Health first
+            const healthRes = await fetch('/api/health');
+            if (!healthRes.ok) throw new Error(`Server unstable (HTTP ${healthRes.status})`);
+            const health = await healthRes.json();
+
+            if (!health.ready) {
+                if (health.error) throw new Error('Model loading failed: ' + health.error);
+                progressStatus.innerText = 'Downloading/Loading Models (First time may take 5-10 mins)...';
+                setTimeout(() => generateBtn.click(), 5000);
+                return;
+            }
+
+            // Reset Streaming State
+            playQueue = [];
+            currentlyPlayingIndex = -1;
+            isAutoPlaying = false;
+            currentSessionId = null;
+            isPlaybackStalled = false;
+
             // 1. Start Session
             let payload = {
                 text,
                 language,
                 speed: parseFloat(speedSlider.value),
                 voice_id: selectedVoice || 'vivian',
-                mode: currentTab,
+                engine: document.getElementById('engine-input').value,
+                mode: currentTab === 'reader' ? 'preset' : currentTab,
                 instruction: instructionInput.value
             };
 
-            // Additional info for specialized modes
+            // ... (Specialized modes logic remains same) ...
             if (currentTab === 'design') {
                 payload.extra_info = document.getElementById('voice-description').value;
                 if (!payload.extra_info) throw new Error('Enter voice description');
-            } else if (currentTab === 'clone') {
-                if (!selectedFile) throw new Error('Please upload a reference audio');
-                // For direct clones not yet saved, we still need to handle the initial upload
-                // However, following the plan to unify, we keep it simple: 
-                // if it's a new clone, we use the old direct endpoint or a simplified session start.
-                // TO-DO: For now, we'll keep the direct /api/clone logic for unsaved clones 
-                // but wrap it in UI feedback, OR simplify sessions to handle files (harder).
-                // Let's stick to the simplest: Sessions for everything else, direct for unsaved clone.
             }
 
             // Execute based on type
             if (currentTab === 'clone' && selectedFile) {
-                // Direct clone path (simplified progress)
-                progressStatus.innerText = 'Cloning... (Slow process)';
-                progressBarFill.style.width = '50%';
-
                 const formData = new FormData();
                 formData.append('audio', selectedFile);
                 formData.append('text', text);
                 formData.append('language', language);
                 formData.append('speed', speedSlider.value);
 
-                const res = await fetch('/api/clone', { method: 'POST', body: formData });
-                const result = await res.json();
-                if (result.url) finalizeGeneration(result.url);
-                else throw new Error(result.error);
+                const res = await fetch('/api/stream/start-clone', { method: 'POST', body: formData });
+                if (!res.ok) {
+                    const errData = await res.json().catch(() => ({}));
+                    throw new Error(errData.error || `Server error (${res.status})`);
+                }
+                const session = await res.json();
+                if (session.error) throw new Error(session.error);
+
+                currentSessionId = session.session_id;
+                totalChunksInSession = session.total_chunks;
+                outputCard.classList.remove('hidden');
+                pollGenerationStatus(session.session_id, session.total_chunks);
                 return;
             }
 
@@ -223,9 +286,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                throw new Error(errData.error || `Server error (${res.status})`);
+            }
             const session = await res.json();
-
             if (session.error) throw new Error(session.error);
+
+            currentSessionId = session.session_id;
+            totalChunksInSession = session.total_chunks;
+            outputCard.classList.remove('hidden'); // Show player early
             pollGenerationStatus(session.session_id, session.total_chunks);
 
         } catch (e) {
@@ -235,33 +305,101 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     async function pollGenerationStatus(sessionId, totalChunks) {
+        if (currentSessionId !== sessionId) return; // Prevent overlapping sessions
+
         try {
             const res = await fetch(`/api/stream/status/${sessionId}`);
+            if (!res.ok) throw new Error(`Status lost (${res.status})`);
             const status = await res.json();
 
             if (status.error) throw new Error(status.error);
+
+            // Update Queue & Auto-Play
+            status.ready_chunks.forEach(index => {
+                if (!playQueue.includes(index)) {
+                    playQueue.push(index);
+                    playQueue.sort((a, b) => a - b);
+                }
+            });
+
+            // Auto-start playback with Pre-buffering
+            const BUFFER_SIZE = 10;
+            if (!isAutoPlaying) {
+                const canStart = playQueue.length >= BUFFER_SIZE || (totalChunks > 0 && playQueue.length === totalChunks);
+                if (canStart && playQueue.includes(0)) {
+                    console.log("Buffer ready, starting playback.");
+                    isAutoPlaying = true;
+                    playNextChunk();
+                }
+            }
 
             // Update UI
             const ready = status.ready_chunks.length;
             const progress = (ready / totalChunks) * 100;
             progressBarFill.style.width = `${progress}%`;
             progressCount.innerText = `${ready}/${totalChunks}`;
-            progressStatus.innerText = status.status;
+
+            let statusText = status.status;
+            if (isPlaybackStalled) {
+                statusText = "Recuperando buffer fluidez...";
+            } else if (!isAutoPlaying && playQueue.length > 0) {
+                statusText = `Cargando buffer de seguridad (${playQueue.length}/${Math.min(BUFFER_SIZE, totalChunks)})...`;
+            } else if (isAutoPlaying) {
+                statusText = `Playing & Generating... (${status.status})`;
+            }
+
+            progressStatus.innerText = statusText;
+
+            // Stall Recovery: If we were waiting for a chunk that is now ready
+            if (isPlaybackStalled && playQueue.includes(currentlyPlayingIndex + 1)) {
+                console.log("Stall recovered! Playing next chunk.");
+                isPlaybackStalled = false;
+                playNextChunk();
+            }
 
             if (status.status === 'Completed') {
-                progressStatus.innerText = 'Merging chunks...';
-                const concatRes = await fetch(`/api/stream/concatenate/${sessionId}`);
-                const final = await concatRes.json();
-                if (final.url) finalizeGeneration(final.url);
-                else throw new Error(final.error);
+                console.log('Generation completed, waiting for final playback.');
             } else if (status.status === 'Error') {
                 throw new Error(status.error);
             } else {
-                // Continue polling
                 setTimeout(() => pollGenerationStatus(sessionId, totalChunks), 1500);
             }
         } catch (e) {
-            alert('Generation error: ' + e.message);
+            console.error(e);
+            resetGenUI();
+        }
+    }
+
+    function playNextChunk() {
+        const nextIndex = currentlyPlayingIndex + 1;
+        if (playQueue.includes(nextIndex)) {
+            isPlaybackStalled = false;
+            currentlyPlayingIndex = nextIndex;
+            audioPlayer.src = `/api/stream/audio/${currentSessionId}/${nextIndex}`;
+            audioPlayer.play();
+        } else {
+            console.log("Waiting for next chunk... Stalling playback.");
+            isPlaybackStalled = true;
+            progressStatus.innerText = "Buffering next chunk...";
+        }
+    }
+
+    // Audio Player Event Listeners
+    audioPlayer.addEventListener('ended', () => {
+        if (currentlyPlayingIndex < totalChunksInSession - 1) {
+            playNextChunk();
+        } else {
+            console.log("All chunks played. Fetching final file...");
+            finalizeSession();
+        }
+    });
+
+    async function finalizeSession() {
+        progressStatus.innerText = 'Finishing...';
+        const concatRes = await fetch(`/api/stream/concatenate/${currentSessionId}`);
+        const final = await concatRes.json();
+        if (final.url) {
+            downloadBtn.onclick = () => window.open(final.url);
             resetGenUI();
         }
     }
@@ -285,27 +423,56 @@ document.addEventListener('DOMContentLoaded', () => {
     const pdfDropZone = document.getElementById('pdf-drop-zone');
 
     pdfDropZone.addEventListener('click', () => pdfInput.click());
+
+    // Drag & Drop for PDF
+    pdfDropZone.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        pdfDropZone.style.borderColor = 'var(--primary)';
+    });
+
+    pdfDropZone.addEventListener('dragleave', () => {
+        pdfDropZone.style.borderColor = 'var(--glass-border)';
+    });
+
+    pdfDropZone.addEventListener('drop', (e) => {
+        e.preventDefault();
+        pdfDropZone.style.borderColor = 'var(--glass-border)';
+        const file = e.dataTransfer.files[0];
+        if (file && file.type === 'application/pdf') {
+            handlePDFExtraction(file);
+        } else {
+            alert("Por favor, suelta un archivo PDF válido.");
+        }
+    });
+
     pdfInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
-        if (!file) return;
+        if (file) handlePDFExtraction(file);
+    });
 
+    async function handlePDFExtraction(file) {
         pdfDropZone.querySelector('p').innerText = 'Extracting text...';
         const formData = new FormData();
         formData.append('file', file);
 
         try {
             const res = await fetch('/api/extract-text', { method: 'POST', body: formData });
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                throw new Error(errData.error || `Server error (${res.status})`);
+            }
             const result = await res.json();
             if (result.text) {
-                ttsInput.value = result.text;
+                ttsInput.value = result.text.trim();
                 pdfDropZone.querySelector('p').innerText = `Extracted: ${file.name}`;
             } else {
-                alert('Extraction failed: ' + result.error);
+                alert('Extraction failed: ' + (result.error || 'Empty text'));
                 pdfDropZone.querySelector('p').innerText = 'Drop PDF to extract text';
             }
         } catch (e) {
             console.error(e);
+            alert("Error al extraer PDF: " + e.message);
             pdfDropZone.querySelector('p').innerText = 'Drop PDF to extract text';
         }
-    });
+    }
 });
