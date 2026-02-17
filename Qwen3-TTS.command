@@ -22,8 +22,13 @@ else
     exit 1
 fi
 
+<<<<<<< HEAD
 # Open the browser in the background
 sleep 2 && open "http://127.0.0.1:5051" &
+=======
+# Open the browser in the background (app.py runs on 5051 by default)
+sleep 5 && open "http://127.0.0.1:5051" &
+>>>>>>> 51bb89b (feat: v1.3.0 - Soporte Mac M1-M4, Streaming en tiempo real y diseño de voz consistente)
 
 # Run the app
 python app.py

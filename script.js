@@ -14,6 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const presetVoicesDiv = document.getElementById('preset-voices');
     const cloneControls = document.getElementById('clone-controls');
     const designControls = document.getElementById('design-controls');
+    const readerControls = document.getElementById('reader-controls');
 
     let currentTab = 'preset';
     let selectedVoice = null;
@@ -38,11 +39,11 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const voices = await res.json();
             voiceSelector.innerHTML = voices.map(v => `
-                <div class="voice-card ${v.type || 'preset'}" data-id="${v.id}">
+                <div class="voice-card ${(selectedVoice === v.id) ? 'selected' : ''}" data-id="${v.id}">
                     <div class="voice-badge">${v.type === 'preset' ? 'Official' : 'Custom'}</div>
                     ${v.type !== 'preset' ? `<button class="delete-voice-btn" title="Delete voice">×</button>` : ''}
                     <h4>${v.name}</h4>
-                    <p>${v.description}</p>
+                    <p>${v.description || ''}</p>
                 </div>
             `).join('');
 
@@ -96,38 +97,26 @@ document.addEventListener('DOMContentLoaded', () => {
             item.classList.add('active');
             currentTab = item.dataset.tab;
 
-            presetVoicesDiv.classList.add('hidden');
-            cloneControls.classList.add('hidden');
-            designControls.classList.add('hidden');
+            [presetVoicesDiv, cloneControls, designControls, readerControls].forEach(el => el.classList.add('hidden'));
 
-            if (currentTab === 'preset') {
-                presetVoicesDiv.classList.remove('hidden');
-                sessionMode = 'preset';
-            }
-            if (currentTab === 'clone') {
-                cloneControls.classList.remove('hidden');
-                sessionMode = 'clone';
-            }
-            if (currentTab === 'design') {
-                designControls.classList.remove('hidden');
-                sessionMode = 'design';
-            }
-            if (currentTab === 'reader') document.getElementById('reader-controls').classList.remove('hidden');
+            if (currentTab === 'preset') presetVoicesDiv.classList.remove('hidden');
+            if (currentTab === 'clone') cloneControls.classList.remove('hidden');
+            if (currentTab === 'design') designControls.classList.remove('hidden');
+            if (currentTab === 'reader') readerControls.classList.remove('hidden');
         });
     });
 
     // File Upload handling
-    const dropZone = document.getElementById('drop-zone');
     const audioInput = document.getElementById('audio-input');
+    const dropZone = document.getElementById('drop-zone');
 
-    dropZone.addEventListener('click', () => audioInput.click());
-    audioInput.addEventListener('change', (e) => {
-        const file = e.target.files[0];
-        if (file) {
-            selectedFile = file;
-            dropZone.querySelector('p').innerText = `Selected: ${selectedFile.name}`;
-        }
-    });
+    if (dropZone) {
+        dropZone.addEventListener('click', () => audioInput.click());
+        audioInput.addEventListener('change', (e) => {
+            selectedFile = e.target.files[0];
+            if (selectedFile) dropZone.querySelector('p').innerText = `Selected: ${selectedFile.name}`;
+        });
+    }
 
     // Drag & Drop
     dropZone.addEventListener('dragover', (e) => {
@@ -149,6 +138,7 @@ document.addEventListener('DOMContentLoaded', () => {
             audioInput.files = e.dataTransfer.files; // Sync to input
         }
     });
+
     // Save Voice Logic
     const saveDesignBtn = document.getElementById('save-design-btn');
     const saveCloneBtn = document.getElementById('save-clone-btn');
@@ -156,7 +146,6 @@ document.addEventListener('DOMContentLoaded', () => {
     async function saveVoice(type, value, audioFile = null) {
         const name = prompt(`Enter a name for this ${type} voice:`);
         if (!name) return;
-
         const description = prompt(`Enter a short description for "${name}":`);
 
         try {
@@ -199,6 +188,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!selectedFile) return alert('Por favor, selecciona o arrastra un archivo de audio primero');
         saveVoice('clone', null, selectedFile);
     });
+
     // --- UI Progress Elements ---
     const progressContainer = document.getElementById('progress-container');
     const progressStatus = document.getElementById('progress-status');
@@ -221,16 +211,16 @@ document.addEventListener('DOMContentLoaded', () => {
         outputCard.classList.add('hidden');
 
         try {
-            // 0. Check Health first
+            // Check Health first
             const healthRes = await fetch('/api/health');
-            if (!healthRes.ok) throw new Error(`Server unstable (HTTP ${healthRes.status})`);
-            const health = await healthRes.json();
-
-            if (!health.ready) {
-                if (health.error) throw new Error('Model loading failed: ' + health.error);
-                progressStatus.innerText = 'Downloading/Loading Models (First time may take 5-10 mins)...';
-                setTimeout(() => generateBtn.click(), 5000);
-                return;
+            if (healthRes.ok) {
+                const health = await healthRes.json();
+                if (!health.ready) {
+                    if (health.error) throw new Error('Model loading failed: ' + health.error);
+                    progressStatus.innerText = 'Downloading/Loading Models (First time may take 5-10 mins)...';
+                    setTimeout(() => generateBtn.click(), 5000);
+                    return;
+                }
             }
 
             // Reset Streaming State
@@ -251,7 +241,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 instruction: instructionInput.value
             };
 
-            // ... (Specialized modes logic remains same) ...
             if (currentTab === 'design') {
                 payload.extra_info = document.getElementById('voice-description').value;
                 if (!payload.extra_info) throw new Error('Enter voice description');
@@ -275,12 +264,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 currentSessionId = session.session_id;
                 totalChunksInSession = session.total_chunks;
-                outputCard.classList.remove('hidden');
                 pollGenerationStatus(session.session_id, session.total_chunks);
                 return;
             }
 
-            // Session Path (Presets & Design)
             const res = await fetch('/api/stream/start', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -295,7 +282,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
             currentSessionId = session.session_id;
             totalChunksInSession = session.total_chunks;
-            outputCard.classList.remove('hidden'); // Show player early
             pollGenerationStatus(session.session_id, session.total_chunks);
 
         } catch (e) {
@@ -305,7 +291,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     async function pollGenerationStatus(sessionId, totalChunks) {
-        if (currentSessionId !== sessionId) return; // Prevent overlapping sessions
+        if (currentSessionId !== sessionId) return;
 
         try {
             const res = await fetch(`/api/stream/status/${sessionId}`);
@@ -314,58 +300,51 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (status.error) throw new Error(status.error);
 
-            // Update Queue & Auto-Play
-            status.ready_chunks.forEach(index => {
-                if (!playQueue.includes(index)) {
-                    playQueue.push(index);
+            // Update Progress UI
+            const readyCount = status.ready_chunks.length;
+            const progress = (readyCount / totalChunks) * 100;
+            progressBarFill.style.width = `${progress}%`;
+            progressCount.innerText = `${readyCount}/${totalChunks}`;
+
+            // Update Status Text with Context
+            let statusText = status.status;
+            if (isPlaybackStalled) {
+                statusText = "Recuperando buffer fluidez...";
+            } else if (!isAutoPlaying && status.ready_chunks.length > 0) {
+                statusText = `Cargando buffer de seguridad...`;
+            }
+            progressStatus.innerText = statusText;
+
+            // Update Play Queue
+            status.ready_chunks.forEach(idx => {
+                if (!playQueue.includes(idx)) {
+                    playQueue.push(idx);
                     playQueue.sort((a, b) => a - b);
                 }
             });
 
-            // Auto-start playback with Pre-buffering
-            const BUFFER_SIZE = 10;
-            if (!isAutoPlaying) {
-                const canStart = playQueue.length >= BUFFER_SIZE || (totalChunks > 0 && playQueue.length === totalChunks);
-                if (canStart && playQueue.includes(0)) {
-                    console.log("Buffer ready, starting playback.");
-                    isAutoPlaying = true;
-                    playNextChunk();
-                }
+            // Auto-start playback
+            if (!isAutoPlaying && playQueue.includes(0)) {
+                isAutoPlaying = true;
+                outputCard.classList.remove('hidden');
+                playNextChunk();
             }
 
-            // Update UI
-            const ready = status.ready_chunks.length;
-            const progress = (ready / totalChunks) * 100;
-            progressBarFill.style.width = `${progress}%`;
-            progressCount.innerText = `${ready}/${totalChunks}`;
-
-            let statusText = status.status;
-            if (isPlaybackStalled) {
-                statusText = "Recuperando buffer fluidez...";
-            } else if (!isAutoPlaying && playQueue.length > 0) {
-                statusText = `Cargando buffer de seguridad (${playQueue.length}/${Math.min(BUFFER_SIZE, totalChunks)})...`;
-            } else if (isAutoPlaying) {
-                statusText = `Playing & Generating... (${status.status})`;
-            }
-
-            progressStatus.innerText = statusText;
-
-            // Stall Recovery: If we were waiting for a chunk that is now ready
+            // Stall Recovery
             if (isPlaybackStalled && playQueue.includes(currentlyPlayingIndex + 1)) {
-                console.log("Stall recovered! Playing next chunk.");
                 isPlaybackStalled = false;
                 playNextChunk();
             }
 
-            if (status.status === 'Completed') {
-                console.log('Generation completed, waiting for final playback.');
+            if (status.status === 'Completed' && readyCount === totalChunks) {
+                console.log('All chunks ready.');
             } else if (status.status === 'Error') {
                 throw new Error(status.error);
             } else {
                 setTimeout(() => pollGenerationStatus(sessionId, totalChunks), 1500);
             }
         } catch (e) {
-            console.error(e);
+            console.error('Generation error:', e);
             resetGenUI();
         }
     }
@@ -376,39 +355,36 @@ document.addEventListener('DOMContentLoaded', () => {
             isPlaybackStalled = false;
             currentlyPlayingIndex = nextIndex;
             audioPlayer.src = `/api/stream/audio/${currentSessionId}/${nextIndex}`;
-            audioPlayer.play();
+            audioPlayer.play().catch(e => console.warn("Auto-play blocked or error:", e));
         } else {
-            console.log("Waiting for next chunk... Stalling playback.");
+            console.log("Buffering...");
             isPlaybackStalled = true;
             progressStatus.innerText = "Buffering next chunk...";
         }
     }
 
-    // Audio Player Event Listeners
     audioPlayer.addEventListener('ended', () => {
         if (currentlyPlayingIndex < totalChunksInSession - 1) {
             playNextChunk();
         } else {
-            console.log("All chunks played. Fetching final file...");
             finalizeSession();
         }
     });
 
     async function finalizeSession() {
         progressStatus.innerText = 'Finishing...';
-        const concatRes = await fetch(`/api/stream/concatenate/${currentSessionId}`);
-        const final = await concatRes.json();
-        if (final.url) {
-            downloadBtn.onclick = () => window.open(final.url);
-            resetGenUI();
+        // Check if there is a concatenate endpoint, otherwise just reset
+        try {
+            const concatRes = await fetch(`/api/stream/concatenate/${currentSessionId}`);
+            if (concatRes.ok) {
+                const final = await concatRes.json();
+                if (final.url) {
+                    downloadBtn.onclick = () => window.open(final.url);
+                }
+            }
+        } catch (e) {
+            console.log("Session finished (no concatenation needed/available)");
         }
-    }
-
-    function finalizeGeneration(url) {
-        audioPlayer.src = url;
-        outputCard.classList.remove('hidden');
-        audioPlayer.play();
-        downloadBtn.onclick = () => window.open(url);
         resetGenUI();
     }
 
@@ -422,28 +398,25 @@ document.addEventListener('DOMContentLoaded', () => {
     const pdfInput = document.getElementById('pdf-input');
     const pdfDropZone = document.getElementById('pdf-drop-zone');
 
-    pdfDropZone.addEventListener('click', () => pdfInput.click());
+    if (pdfDropZone) {
+        pdfDropZone.addEventListener('click', () => pdfInput.click());
 
-    // Drag & Drop for PDF
-    pdfDropZone.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        pdfDropZone.style.borderColor = 'var(--primary)';
-    });
-
-    pdfDropZone.addEventListener('dragleave', () => {
-        pdfDropZone.style.borderColor = 'var(--glass-border)';
-    });
-
-    pdfDropZone.addEventListener('drop', (e) => {
-        e.preventDefault();
-        pdfDropZone.style.borderColor = 'var(--glass-border)';
-        const file = e.dataTransfer.files[0];
-        if (file && file.type === 'application/pdf') {
-            handlePDFExtraction(file);
-        } else {
-            alert("Por favor, suelta un archivo PDF válido.");
-        }
-    });
+        pdfDropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            pdfDropZone.style.borderColor = 'var(--primary)';
+        });
+        pdfDropZone.addEventListener('dragleave', () => {
+            pdfDropZone.style.borderColor = 'var(--glass-border)';
+        });
+        pdfDropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            pdfDropZone.style.borderColor = 'var(--glass-border)';
+            const file = e.dataTransfer.files[0];
+            if (file && file.type === 'application/pdf') {
+                handlePDFExtraction(file);
+            }
+        });
+    }
 
     pdfInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
@@ -453,20 +426,17 @@ document.addEventListener('DOMContentLoaded', () => {
     async function handlePDFExtraction(file) {
         pdfDropZone.querySelector('p').innerText = 'Extracting text...';
         const formData = new FormData();
-        formData.append('file', file);
+        formData.append('pdf', file);
 
         try {
-            const res = await fetch('/api/extract-text', { method: 'POST', body: formData });
-            if (!res.ok) {
-                const errData = await res.json().catch(() => ({}));
-                throw new Error(errData.error || `Server error (${res.status})`);
-            }
+            const res = await fetch('/api/extract-pdf', { method: 'POST', body: formData });
+            if (!res.ok) throw new Error(`Server error (${res.status})`);
             const result = await res.json();
             if (result.text) {
                 ttsInput.value = result.text.trim();
                 pdfDropZone.querySelector('p').innerText = `Extracted: ${file.name}`;
             } else {
-                alert('Extraction failed: ' + (result.error || 'Empty text'));
+                alert('Extraction failed');
                 pdfDropZone.querySelector('p').innerText = 'Drop PDF to extract text';
             }
         } catch (e) {

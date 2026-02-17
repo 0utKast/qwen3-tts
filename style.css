@@ -343,6 +343,14 @@ nav {
     border-color: var(--primary);
 }
 
+.input-tip {
+    font-size: 0.7rem;
+    color: var(--text-muted);
+    margin-top: -12px;
+    margin-bottom: 8px;
+    opacity: 0.8;
+}
+
 .language-selector {
     display: flex;
     flex-direction: column;
@@ -644,12 +652,13 @@ audio {
     position: relative;
 }
 
-.voice-card.preset .voice-badge {
+.voice-card .voice-badge {
     background: rgba(59, 130, 246, 0.2);
     color: var(--secondary);
 }
 
-.voice-card.custom .voice-badge {
+.voice-card[data-type="design"] .voice-badge,
+.voice-card[data-type="clone"] .voice-badge {
     background: rgba(249, 115, 22, 0.2);
     color: var(--cta);
 }

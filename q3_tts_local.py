@@ -81,6 +81,13 @@ def main(text: str | None, output: str, language: str, instruct: str | None, clo
         output_path = get_unique_filename(output_path)
     
     # Determine model to load
+<<<<<<< HEAD
+=======
+    # Choose model based on mode:
+    # - Clone uses Base model (supports ref_audio speaker embedding)
+    # - Design/instruct uses VoiceDesign model
+    # - No instruct and no clone: also use VoiceDesign with a default description
+>>>>>>> 51bb89b (feat: v1.3.0 - Soporte Mac M1-M4, Streaming en tiempo real y diseño de voz consistente)
     model_id = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign"
     if clone:
         model_id = "Qwen/Qwen3-TTS-12Hz-1.7B-Base"
@@ -98,6 +105,7 @@ def main(text: str | None, output: str, language: str, instruct: str | None, clo
         click.echo(f"Step 3: Starting generation process...", err=True)
     
     if clone:
+<<<<<<< HEAD
         # Build generation kwargs for cloning
         gen_kwargs = {
             "text": text,
@@ -117,6 +125,34 @@ def main(text: str | None, output: str, language: str, instruct: str | None, clo
             "instruct": instruct or "",
         }
         # Generate with voice design
+=======
+        # Voice cloning via Base model's generate() with ref_audio
+        # (mlx-audio has no generate_voice_clone — use generate(ref_audio=...) instead)
+        gen_kwargs = {
+            "text": text,
+            "ref_audio": clone,
+            "lang_code": language,
+            "verbose": verbose,
+        }
+        results = list(model.generate(**gen_kwargs))
+    elif instruct:
+        # Voice design with explicit voice description
+        gen_kwargs = {
+            "text": text,
+            "lang_code": language,
+            "verbose": verbose,
+            "instruct": instruct,
+        }
+        results = list(model.generate_voice_design(**gen_kwargs))
+    else:
+        # No instruct, no clone: use generate() with a sensible default
+        gen_kwargs = {
+            "text": text,
+            "lang_code": language,
+            "verbose": verbose,
+            "instruct": "A natural, clear voice with moderate pace.",
+        }
+>>>>>>> 51bb89b (feat: v1.3.0 - Soporte Mac M1-M4, Streaming en tiempo real y diseño de voz consistente)
         results = list(model.generate_voice_design(**gen_kwargs))
     
     if verbose:
